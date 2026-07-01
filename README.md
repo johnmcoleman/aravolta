@@ -16,7 +16,7 @@ limits drawn on the chart (red when breaching):
 
 # Architecture
 
-## How I handle ingestion load
+## Ingestion load handling
 
 The ingest endpoint `POST /api/metrics` validates the payload, does an O(1) 
 `queue.put_nowait()` onto an in-process buffer, and returns 202 Accepted without directly 
