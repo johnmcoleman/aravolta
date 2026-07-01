@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     batch_max_size: int = 500          # flush once this many rows are buffered
     batch_max_interval_ms: int = 250   # ...or this long has passed since last flush
     queue_max: int = 100_000           # backpressure ceiling: reject if buffer is this full
+    # On a transient DB error, retry the batch this many times (exponential backoff)
+    # before giving up. Covers the common case (a brief blip) without dropping data;
+    # while retrying, the queue backs up and sheds load (503) rather than losing rows.
+    flush_max_retries: int = 3
 
     # Fleet view: a device is "online" if its last reading is within this window.
     online_window_seconds: int = 30

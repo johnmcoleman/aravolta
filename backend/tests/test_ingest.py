@@ -66,3 +66,46 @@ async def test_cas_does_not_clobber_with_older_reading(infra):
     await cache.set_latest_if_newer("d", 1.0, 1.0, old.isoformat(), old.timestamp())
     latest = await cache.get_latest("d")
     assert latest["power"] == 600.0  # the stale write was rejected
+
+
+async def test_transient_db_error_is_retried_not_dropped(infra, monkeypatch):
+    """A batch that fails to write once must be retried, not silently dropped —
+    the row should end up persisted."""
+    ts = datetime.now(timezone.utc)
+    real_write_db = ingest._write_db
+    calls = {"n": 0}
+
+    async def flaky_write_db(batch):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient DB blip")
+        await real_write_db(batch)
+
+    monkeypatch.setattr(ingest, "_write_db", flaky_write_db)
+    monkeypatch.setattr(settings, "flush_max_retries", 3)
+    # Fresh queue bound to this test's event loop (mirrors the unit tests above).
+    monkeypatch.setattr(ingest, "_queue", asyncio.Queue())
+
+    ingest._stopping.clear()
+    ingest._queue.put_nowait(("rack-retry", ts, 500.0, 70.0))
+    ingest.start()
+    ingest._stopping.set()          # drain-then-exit once the buffered row is written
+    await ingest._worker
+
+    assert calls["n"] == 2          # failed once, succeeded on retry
+    row = await db.pool().fetchrow(
+        "SELECT power FROM metrics WHERE device_id='rack-retry'")
+    assert row is not None and row["power"] == 500.0
+
+
+async def test_graceful_stop_drains_buffered_rows(infra, monkeypatch):
+    """stop() must flush whatever is still buffered before the writer exits."""
+    monkeypatch.setattr(ingest, "_queue", asyncio.Queue())  # bind to this loop
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        ingest._queue.put_nowait((f"drain-{i}", now, 100.0 + i, 60.0))
+    ingest.start()
+    await ingest.stop()             # should drain all 3, then return (not hang)
+
+    n = await db.pool().fetchval("SELECT count(*) FROM metrics WHERE device_id LIKE 'drain-%'")
+    assert n == 3 and ingest._queue.empty()
