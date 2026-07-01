@@ -1,4 +1,4 @@
-# Aravolta — Live Device Telemetry Dashboard & API
+# Live Device Telemetry Dashboard & API
 
 A live telemetry dashboard + ingestion API for a data center with thousands of racks reporting power and temperature telemetry data.
 
