@@ -1,0 +1,25 @@
+# Local infrastructure for the telemetry dashboard.
+# Standard Compose file: `docker compose up -d` on your machine,
+# `nerdctl compose up -d` in this sandbox (containerd-backed).
+services:
+  # TimescaleDB = Postgres + the time-series extension preloaded.
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      # Pulled from the gitignored .env (see .env.example). No literal credential
+      # in source; compose fails to start if POSTGRES_PASSWORD is unset.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-telemetry}
+    ports:
+      - "5432:5432"          # host:container -> reach it at localhost:5432
+    volumes:
+      - db_data:/var/lib/postgresql/data   # persist data across restarts
+
+  # Dragonfly = Redis-compatible cache for "latest per device" / live reads.
+  cache:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    ports:
+      - "6379:6379"
+
+volumes:
+  db_data:

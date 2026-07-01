@@ -1,0 +1,29 @@
+/* Minimal global base. PrimeVue's Aura dark theme handles component styling;
+   here we only set the page background, text colour, and font. */
+:root {
+  color-scheme: dark;
+  --bg: #09090b;          /* near-black page background (zinc-950) */
+  --bg-elevated: #18181b; /* cards/panels */
+  --border: #27272a;
+  --text: #e4e4e7;
+  --text-muted: #a1a1aa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
