@@ -42,8 +42,8 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
   write-throughs the latest reading per device into the cache.
 - The cache write uses an atomic Lua compare-and-set: with multiple workers,
   two flushes for one device can land out of order, so I only overwrite the cached
-  "latest" if the incoming timestamp is newer. This prevents and older reading from
-  removing a new one and losing data on the live telemetry charts.
+  "latest" if the incoming timestamp is newer. This prevents an older reading from
+  removing a newer one and losing data on the live telemetry charts.
 
 ## Tradeoffs
 
@@ -61,12 +61,11 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
 - **Server-side pagination for reads:** the browser only ever holds one page, but
   each read request does an O(N) merge of the roster + cache (`_snapshot`). Fine at
   ~1k; at 50k it needs maintained counters / a search index instead.
-- **PostgresSQL's TimescaleDB**: To efficiently ingest and store time series data it is 
-  ideal to use a database specifically suited to it. A choice like InfluxDB for its ability
-  to do time based partitions and column based compression to keep query speeds fast
-  and avoid the quantity of data becoming to large for the database. I am not familiar
-  with InfluxDB so I went with the TimescaleDB extension for Postgres to achieve similar
-  benefits.
+- **TimescaleDB (a PostgreSQL extension)**: time-series data is best served by a store
+  built for it — time-based partitioning and columnar compression keep queries fast and
+  keep the data volume manageable. InfluxDB (the role's stack) does exactly this, but I'm
+  not familiar enough with it to stand behind it, so I used TimescaleDB to get the same
+  benefits in SQL I know well.
 
 ## High-level data flow
 
@@ -80,14 +79,16 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
                                                             COPY  ▼                        ▼  write-through (CAS)
                                                        TimescaleDB (hypertable)       Dragonfly (latest/device)
                                                                  ▲                        ▲
- browser ◀─ poll 5s/15s ─ GET /api/devices (page) · /:id/metrics (window) │  /:id/live · /api/summary │
+ browser ◀─ poll 5s/15s ─ GET /api/devices, /:id/metrics ← Postgres  ·  /:id/live, /api/summary ← cache
 ```
 
 1. Racks POST readings → API validates and buffers → returns 202.
 2. Batch writer flushes to TimescaleDB (`COPY`) and updates the cache.
 3. The browser reads the fleet page and time-window history from Postgres while it takes
-   the latest-per-device values and fleet summary from the cache. Reads are
-   served on a different path from writes, so heavy reads don't slow ingestion.
+   the latest-per-device values and fleet summary from the cache. The hottest, most
+   frequent reads (latest / summary) are cache-served and never touch Postgres; the fleet
+   page and history do query Postgres, but on pooled connections separate from the batch
+   writer.
 
 ## Database schema
 
@@ -111,9 +112,9 @@ metrics (                         -- append-only time-series, a Timescale HYPERT
 --   "last 60s for device X"  and  "latest reading for device X"
 ```
 
-`metrics` is a hypertable which Timescale automatically partitions it into time based
-chunks so old data drops a whole chunk instantly and "last 60s" queries only scan
-the newest chunk. Alert limits live in the `devices` table, per device so any rack 
+`metrics` is a hypertable — Timescale automatically partitions it into time-based
+chunks, so old data drops a whole chunk instantly and "last 60s" queries only scan
+the newest chunk. Alert limits live in the `devices` table, per device, so any rack
 or hardware type can carry its own power/thermal statistical limits.
 
 ## How the system handles high-frequency writes
@@ -121,8 +122,9 @@ or hardware type can carry its own power/thermal statistical limits.
 - Batched `COPY` as opposed to per-row `INSERT` is the fastest bulk path into Postgres.
   One round-trip / transaction / WAL flush per batch instead of per row.
 - The hypertable keeps writes hitting the newest chunk and its index small.
-- Reads don't compete with writes: the read-hot "latest per device" and fleet
-  summary are served from the cache, not the write table.
+- The hottest reads are offloaded: "latest per device" and the fleet summary are served
+  from the cache, so the most frequent reads never hit the write table. (The 60s history
+  query does read `metrics`, but only its newest chunk.)
 - Measured on my laptop's VM: a single-node batched `COPY` sustains ~693,000 rows/s
   (see below) so the storage layer is not the constraint.
 
@@ -159,10 +161,10 @@ numbers are conservative but ratios can still inform what would break first.
 | Backpressure: 20-slot buffer under 200 concurrent clients | **1,426 accepted, 148 shed (503), 0 crashes** |
 
 1. **The compute / write-acceptance tier breaks first.** On real infrastructure the
-   fix is horizontal API workers. Proving horizontal scaling cleanly needs the load 
-   generator on a separate** machine and workers on dedicated cores which I don't have
+   fix is horizontal API workers. Proving horizontal scaling cleanly needs the load
+   generator on a separate machine and workers on dedicated cores, which I don't have
    on hand right now as I am doing this on my laptop's VM.
 2. **Then the single Postgres write path** (WAL / disk / index maintenance) under
    sustained extreme load — addressed by compression and sharding.
-3. **Durability gap** —  the in process buffer is lost on crash, so at a larger scale
-it might be worth using Kafka to ensure reliability when the buffer is frequently full.
+3. **Durability gap** — the in-process buffer is lost on crash, so at a larger scale
+   it might be worth using Kafka to ensure reliability when the buffer is frequently full.
