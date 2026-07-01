@@ -43,9 +43,10 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
   single transaction, so a flush is all-or-nothing and safe to retry without
   duplicating rows. If that write fails — a brief Postgres blip — the writer retries
   with exponential backoff, up to `flush_max_retries`, instead of dropping the batch.
-  While it retries the queue backs up, so the endpoint sheds load (503) rather than
-  silently losing readings. Only a DB outage that outlasts every retry drops a batch
-  (the durability gap below).
+  Retries ride out short blips; if the DB stays down long enough that the writer can't
+  drain, the queue fills and the endpoint sheds load (503) — the bounded buffer is the
+  backstop, not the retry itself. Only a DB outage that outlasts every retry drops a
+  batch (the durability gap below).
 - The cache refresh is a separate, best-effort step *after* the durable write: it
   write-throughs the latest reading per device so `/live` and fleet summaries read
   from Dragonfly, not Postgres. Because the data is already persisted and the cache
