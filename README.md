@@ -20,9 +20,10 @@ limits drawn on the chart (red when breaching):
 
 The ingest endpoint `POST /api/metrics` validates the payload, does an O(1) 
 `queue.put_nowait()` onto an in-process buffer, and returns 202 Accepted without directly 
-touching the database. A separate background task does the actual writing. This ensures the 
-accept path has constant length and low latency regardless of how slow (or
-briefly unavailable) the database is.
+touching the database. A separate background task does the actual writing, and it
+retries transient database errors (see below) so a brief blip delays writes rather
+than dropping them. This ensures the accept path has constant length and low latency
+regardless of how slow (or briefly unavailable) the database is.
 
 The buffer is bounded to prevent OOM issues. If the writer can't keep up and the buffer fills, 
 the endpoint returns 503 (load-shedding / backpressure) instead of growing memory
@@ -38,9 +39,19 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
   whole batch with a single Postgres `COPY`. Batching amortizes the fixed
   per-operation costs like the network round-trip and transaction commit across
   hundreds of rows.
-- The same flush also registers new devices once per batch (not per row) and
-  write-throughs the latest reading per device into the cache.
-- The cache write uses an atomic Lua compare-and-set: with multiple workers,
+- The `COPY` and the once-per-batch device registration (not per row) run in a
+  single transaction, so a flush is all-or-nothing and safe to retry without
+  duplicating rows. If that write fails — a brief Postgres blip — the writer retries
+  with exponential backoff, up to `flush_max_retries`, instead of dropping the batch.
+  While it retries the queue backs up, so the endpoint sheds load (503) rather than
+  silently losing readings. Only a DB outage that outlasts every retry drops a batch
+  (the durability gap below).
+- The cache refresh is a separate, best-effort step *after* the durable write: it
+  write-throughs the latest reading per device so `/live` and fleet summaries read
+  from Dragonfly, not Postgres. Because the data is already persisted and the cache
+  self-heals on the next reading, a cache blip just logs and moves on — it never
+  fails the batch.
+- That cache write uses an atomic Lua compare-and-set: with multiple workers,
   two flushes for one device can land out of order, so I only overwrite the cached
   "latest" if the incoming timestamp is newer. This prevents an older reading from
   removing a newer one and losing data on the live telemetry charts.
@@ -155,5 +166,7 @@ numbers are conservative but ratios can still inform what would break first.
    on hand right now as I am doing this on my laptop's VM.
 2. **Then the single Postgres write path** (WAL / disk / index maintenance) under
    sustained extreme load — addressed by compression and sharding.
-3. **Durability gap** — the in-process buffer is lost on crash, so at a larger scale
-   it might be worth using Kafka to ensure reliability when the buffer is frequently full.
+3. **Durability gap** — transient DB errors are retried, so the writer rides out brief
+   blips without losing data. What's *not* covered is a process crash (the in-process
+   buffer is gone) or a DB outage that outlasts every retry. Closing that gap is where a
+   durable log like Kafka comes in (see scaling), so no in-flight readings are lost.
