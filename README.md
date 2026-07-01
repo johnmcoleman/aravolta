@@ -33,26 +33,25 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
 
 ## Batching / queueing / buffering strategy
 
-- Buffer: an in-process `asyncio.Queue` (bound by `queue_max`).
+- The buffer is an in-process `asyncio.Queue` (bound by `queue_max`).
 - One batch-writer task drains it. It collects up to `batch_max_size` rows
   or waits `batch_max_interval_ms` and if either hits the threshold writes the
   whole batch with a single Postgres `COPY`. Batching amortizes the fixed
   per-operation costs like the network round-trip and transaction commit across
   hundreds of rows.
-- The `COPY` and the once-per-batch device registration (not per row) run in a
+- The `COPY` and the once-per-batch device registration run in a
   single transaction, so a flush is all-or-nothing and safe to retry without
-  duplicating rows. If that write fails — a brief Postgres blip — the writer retries
+  duplicating rows. If that write fails due to a Postgres blip the writer retries
   with exponential backoff, up to `flush_max_retries`, instead of dropping the batch.
-  Retries ride out short blips; if the DB stays down long enough that the writer can't
-  drain, the queue fills and the endpoint sheds load (503) — the bounded buffer is the
-  backstop, not the retry itself. Only a DB outage that outlasts every retry drops a
-  batch (the durability gap below).
-- The cache refresh is a separate, best-effort step *after* the durable write: it
+  Retries ride out short blips. If the DB stays down long enough that the writer can't
+  drain, the queue fills and the endpoint sheds load (503). The bounded buffer is the
+  backstop. Only a DB outage that outlasts every retry drops a batch.
+- The cache refresh is a separate, best-effort step after the durable write. It
   write-throughs the latest reading per device so `/live` and fleet summaries read
   from Dragonfly, not Postgres. Because the data is already persisted and the cache
-  self-heals on the next reading, a cache blip just logs and moves on — it never
-  fails the batch.
-- That cache write uses an atomic Lua compare-and-set: with multiple workers,
+  self-heals on the next reading, a cache blip just logs and moves on. It never fails
+  the batch.
+- That cache write uses an atomic Lua compare-and-set. With multiple workers,
   two flushes for one device can land out of order, so I only overwrite the cached
   "latest" if the incoming timestamp is newer. This prevents an older reading from
   removing a newer one and losing data on the live telemetry charts.
@@ -74,10 +73,8 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
   each read request does an O(N) merge of the roster + cache (`_snapshot`). Fine at
   ~1k; at 50k it needs maintained counters / a search index instead.
 - **TimescaleDB (a PostgreSQL extension)**: time-series data is best served by a store
-  built for it — time-based partitioning and columnar compression keep queries fast and
-  keep the data volume manageable. InfluxDB (the role's stack) does exactly this, but I'm
-  not familiar enough with it to stand behind it, so I used TimescaleDB to get the same
-  benefits in SQL I know well.
+  built for it. Time-based partitioning and columnar compression keep queries fast and
+  keep the data volume manageable.
 
 ## High-level data flow
 
@@ -133,9 +130,9 @@ or hardware type can carry its own power/thermal statistical limits.
 
 At the take home's proposed 15-second cadence, 50k devices ≈ 3,300 writes/s, 
 which a single batched writer handles comfortably. What matters is cadence × devices. 
-So, tier by tier:
+So, layer by layer:
 
-- **API tier** — stateless workers behind a load balancer; scale horizontally.
+- **API** — stateless workers behind a load balancer; scale horizontally.
   Each worker owns its own buffer + writer (independent capacity).
 - **Durability + burst absorption** — replace the in-process buffer with Kafka,
   partitioned by `deviceId`. Producers acknowledge only once the record is on disk +
@@ -166,8 +163,8 @@ numbers are conservative but ratios can still inform what would break first.
    generator on a separate machine and workers on dedicated cores, which I don't have
    on hand right now as I am doing this on my laptop's VM.
 2. **Then the single Postgres write path** (WAL / disk / index maintenance) under
-   sustained extreme load — addressed by compression and sharding.
-3. **Durability gap** — transient DB errors are retried, so the writer rides out brief
-   blips without losing data. What's *not* covered is a process crash (the in-process
+   sustained extreme load which can be addressed by compression and sharding.
+3. **Durability gap** Transient DB errors are retried, so the writer rides out brief
+   blips without losing data. What's not covered is a process crash (the in-process
    buffer is gone) or a DB outage that outlasts every retry. Closing that gap is where a
    durable log like Kafka comes in (see scaling), so no in-flight readings are lost.
