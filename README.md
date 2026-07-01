@@ -26,9 +26,9 @@ briefly unavailable) the database is.
 
 The buffer is bounded to prevent OOM issues. If the writer can't keep up and the buffer fills, 
 the endpoint returns 503 (load-shedding / backpressure) instead of growing memory
-until the process dies. The 503 is important because it tells a client deice
+until the process dies. The 503 is important because it tells a client device
 that it needs to back off and retry. This is a tradeoff because it will cause some
-ingestion to be delayed and need a rety, but it is better than losing the entire buffer.
+ingestion to be delayed and need a retry, but it is better than losing the entire buffer.
 
 ## Batching / queueing / buffering strategy
 
