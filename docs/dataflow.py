@@ -71,7 +71,7 @@ arrow((writer[0]+0.95, LANE-0.15), (dfly[0]-1.0, 3.35), WRITE, rad=-0.12, label=
 arrow((tsdb[0]-1.05, 5.35), (api[0]+0.55, api[1]+0.46), READ, style="--", rad=0.30,
       label="/devices, /:id/metrics", lx=1.4, ly=0.62)
 arrow((dfly[0]-0.7, dfly[1]+0.5), (api[0]-0.15, api[1]+0.46), READ, style="--", rad=0.58,
-      label="/live, /summary", lx=-1.1, ly=0.55)
+      label="/live, /summary", lx=-1.25, ly=1.67)
 arrow((api[0], api[1]-0.48), (browser[0], browser[1]+0.5), READ, style="--",
       label="responses", lx=0.95, ly=0.0)
 
