@@ -69,18 +69,7 @@ ingestion to be delayed and need a retry, but it is better than losing the entir
 
 ## High-level data flow
 
-```
-                  ingest (fast, non-blocking)                 store (slow, batched)
- racks ── POST /api/metrics ──▶ FastAPI ──put_nowait()──▶ asyncio.Queue ──▶ batch writer
-          {deviceId,power,          │ 202                 (bounded buffer)      │
-           temperature,ts}          │                                          │ ≤500 rows
-                                    ▼                                          │ OR 250 ms
-                                (validate)                        ┌────────────┴───────────┐
-                                                            COPY  ▼                        ▼  write-through (CAS)
-                                                       TimescaleDB (hypertable)       Dragonfly (latest/device)
-                                                                 ▲                        ▲
- browser ◀─ poll 5s/15s ─ GET /api/devices, /:id/metrics ← Postgres  ·  /:id/live, /api/summary ← cache
-```
+![High-level data flow](docs/dataflow.png)
 
 1. Racks POST readings → API validates and buffers → returns 202.
 2. Batch writer flushes to TimescaleDB (`COPY`) and updates the cache.
